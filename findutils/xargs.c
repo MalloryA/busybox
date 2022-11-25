@@ -147,9 +147,16 @@ struct globals {
  *
  * If G.max_procs == 0, performs final waitpid() loop for all children.
  */
-static int xargs_exec(void)
+static int xargs_exec(int* fd)
 {
 	int status;
+
+	if (*fd != -1) {
+		if (dup2(*fd, STDIN_FILENO) != 0)
+			bb_error_msg_and_die("can't read from /dev/tty");
+		close(*fd);
+		*fd = -1;
+	}
 
 #if !ENABLE_FEATURE_XARGS_SUPPORT_PARALLEL
 	status = spawn_and_wait(G.args);
@@ -542,6 +549,7 @@ static int xargs_ask_confirmation(void)
 //usage:	IF_FEATURE_XARGS_SUPPORT_ARGS_FILE(
 //usage:     "\n	-a FILE	Read from FILE instead of stdin"
 //usage:	)
+//usage:     "\n	-o Reopen stdin as /dev/tty"
 //usage:     "\n	-r	Don't run command if input is empty"
 //usage:     "\n	-t	Print the command on stderr before execution"
 //usage:	IF_FEATURE_XARGS_SUPPORT_CONFIRMATION(
@@ -571,6 +579,7 @@ enum {
 	OPTBIT_UPTO_SIZE,
 	OPTBIT_EOF_STRING,
 	OPTBIT_EOF_STRING1,
+	OPTBIT_STDIN_TTY,
 	IF_FEATURE_XARGS_SUPPORT_CONFIRMATION(OPTBIT_INTERACTIVE,)
 	IF_FEATURE_XARGS_SUPPORT_TERMOPT(     OPTBIT_TERMINATE  ,)
 	IF_FEATURE_XARGS_SUPPORT_ZERO_TERM(   OPTBIT_ZEROTERM   ,)
@@ -583,13 +592,14 @@ enum {
 	OPT_UPTO_SIZE   = 1 << OPTBIT_UPTO_SIZE  ,
 	OPT_EOF_STRING  = 1 << OPTBIT_EOF_STRING , /* GNU: -e[<param>] */
 	OPT_EOF_STRING1 = 1 << OPTBIT_EOF_STRING1, /* SUS: -E<param> */
+	OPT_STDIN_TTY   = 1 << OPTBIT_STDIN_TTY,
 	OPT_INTERACTIVE = IF_FEATURE_XARGS_SUPPORT_CONFIRMATION((1 << OPTBIT_INTERACTIVE)) + 0,
 	OPT_TERMINATE   = IF_FEATURE_XARGS_SUPPORT_TERMOPT(     (1 << OPTBIT_TERMINATE  )) + 0,
 	OPT_ZEROTERM    = IF_FEATURE_XARGS_SUPPORT_ZERO_TERM(   (1 << OPTBIT_ZEROTERM   )) + 0,
 	OPT_REPLSTR     = IF_FEATURE_XARGS_SUPPORT_REPL_STR(    (1 << OPTBIT_REPLSTR    )) + 0,
 	OPT_REPLSTR1    = IF_FEATURE_XARGS_SUPPORT_REPL_STR(    (1 << OPTBIT_REPLSTR1   )) + 0,
 };
-#define OPTION_STR "+trn:s:e::E:" \
+#define OPTION_STR "+trn:s:e::E:o" \
 	IF_FEATURE_XARGS_SUPPORT_CONFIRMATION("p") \
 	IF_FEATURE_XARGS_SUPPORT_TERMOPT(     "x") \
 	IF_FEATURE_XARGS_SUPPORT_ZERO_TERM(   "0") \
@@ -608,6 +618,7 @@ int xargs_main(int argc UNUSED_PARAM, char **argv)
 	unsigned opt;
 	int n_max_chars;
 	int n_max_arg;
+	int fd = -1;
 #if ENABLE_FEATURE_XARGS_SUPPORT_ZERO_TERM \
  || ENABLE_FEATURE_XARGS_SUPPORT_REPL_STR
 	char* FAST_FUNC (*read_args)(int, int, char*) = process_stdin;
@@ -726,6 +737,10 @@ int xargs_main(int argc UNUSED_PARAM, char **argv)
 			store_param(argv[i]);
 	}
 
+	if (opt & OPT_STDIN_TTY)
+		if ((fd = xopen("/dev/tty", O_RDONLY)) == -1)
+			bb_error_msg_and_die("can't open /dev/tty");
+
 	initial_idx = G.idx;
 	while (1) {
 		char *rem;
@@ -754,7 +769,7 @@ int xargs_main(int argc UNUSED_PARAM, char **argv)
 		}
 
 		if (!(opt & OPT_INTERACTIVE) || xargs_ask_confirmation()) {
-			if (xargs_exec() != 0)
+			if (xargs_exec(&fd) != 0)
 				break; /* G.xargs_exitcode is set by xargs_exec() */
 		}
 
@@ -768,7 +783,7 @@ int xargs_main(int argc UNUSED_PARAM, char **argv)
 
 #if ENABLE_FEATURE_XARGS_SUPPORT_PARALLEL
 	G.max_procs = 0;
-	xargs_exec(); /* final waitpid() loop */
+	xargs_exec(&fd); /* final waitpid() loop */
 #endif
 
 	return G.xargs_exitcode;
